@@ -28,6 +28,7 @@ from utils import get_loaders, get_default_transforms
 _TRAINERS = {
     "segformer_b0":       "trainers.segformer_trainer",
     "deeplabv3_resnet50": "trainers.deeplabv3_trainer",
+    "unet_vanilla":        "trainers.unet_vanilla_trainer",
     "unet_resnet34":      "trainers.unet_resnet34_trainer",
 }
 
@@ -59,6 +60,11 @@ def main():
 
     # ── Model ──
     model_kwargs = dict(model_config["model_kwargs"])
+
+    from config import DATASET_CONFIGS
+    dataset_cfg = DATASET_CONFIGS[args.dataset]
+    model_kwargs["in_channels"]  = dataset_cfg["in_channels"]
+    model_kwargs["out_channels"] = dataset_cfg["num_classes"]
     # Merge encoder config into model kwargs (SegFormer-specific)
     encoder_config = model_config.get("encoder_config", {})
     model_kwargs.update(encoder_config)
@@ -71,7 +77,7 @@ def main():
         # Pass encoder config to reinitialize the encoder if needed
         repo_id = model_config.get("pretrained_repo")
         print("Loading pretrained encoder weights...")
-        load_pretrained_encoder(model.encoder, repo_id=repo_id)
+        load_pretrained_encoder(model.encoder, repo_id=repo_id, in_channels=dataset_cfg["in_channels"])
 
     model = nn.DataParallel(model)
     model.to(device)

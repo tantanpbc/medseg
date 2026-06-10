@@ -75,7 +75,7 @@ MODEL_CONFIGS = {
             "epochs_b": 10,
         },
         "model_kwargs": {
-            "num_classes": NUM_CLASSES,
+            "out_channels": NUM_CLASSES,
             "decoder_dim": 256,
             "in_channels": 1,
         },
@@ -92,6 +92,21 @@ MODEL_CONFIGS = {
             "output_stride": 16,
             "in_channels": 1,
             "out_channels": NUM_CLASSES,
+        },
+    },
+    "unet_vanilla": {
+        "backbone_attr": None,          
+        "hyperparams": {
+            "lr_a":      1e-3,          # Stage 1: full-model warm-up
+            "lr_b":      1e-4,          # Stage 2: reduced-LR fine-tuning
+            "batch_size": 16,
+            "epochs_a":  25,
+            "epochs_b":  25,
+        },
+        "model_kwargs": {
+            "in_channels":  1,
+            "out_channels": NUM_CLASSES,
+            "features":     [64, 128, 256, 512],
         },
     },
     "unet_resnet34": {
@@ -117,14 +132,25 @@ MODEL_CONFIGS = {
 
 DATASET_CONFIGS = {
     "ACDC": {
-        "num_classes": 4,
-        "class_names": {1: "RV (Right Ventricle)", 2: "MYO (Myocardium)", 3: "LV (Left Ventricle)"},
-        "default_acdc_dir": "/kaggle/input/acdc-dataset/ACDC_preprocessed",
+        "num_classes":        4,
+        "in_channels":        1,
+        "foreground_classes": [1, 2, 3],
+        "class_names":        ["Background", "RV (Right Ventricle)", "MYO (Myocardium)", "LV (Left Ventricle)"],
+        "default_acdc_dir":   "/kaggle/input/acdc-dataset/ACDC_preprocessed",
     },
     "CAMUS": {
-        "num_classes": 4,  # stored as 0,1,2,3 but only 2,3 are foreground
-        "class_names": {2: "MYO (Myocardium)", 3: "LV (Left Ventricle)"},
-        "default_camus_dir": "/kaggle/input/parsakh/camus-echocardiography-image-dataset/camus-echocardiography-image-dataset",
+        "num_classes":        4,  # stored as 0,1,2,3 but only 2,3 are foreground
+        "in_channels":        1,
+        "foreground_classes": [2, 3],
+        "class_names":        ["Background", "RV (Right Ventricle)", "MYO (Myocardium)", "LV (Left Ventricle)"],
+        "default_camus_dir":  "/kaggle/input/parsakh/camus-echocardiography-image-dataset/camus-echocardiography-image-dataset",
+    },
+    "KVASIR": {
+        "num_classes":        2,
+        "in_channels":        3,
+        "foreground_classes": [1],
+        "class_names":        ["Background", "Polyp"],
+        "default_kvasir_dir": "/kaggle/input/kvasir-seg/Kvasir-SEG",
     },
 }
 
@@ -156,6 +182,11 @@ def parse_args():
                    help="CAMUS frames/ directory (derived from camus_dir if omitted)")
     p.add_argument("--camus_masks_dir",  default=None,
                    help="CAMUS masks/  directory (derived from camus_dir if omitted)")
+
+    # Data paths — KVASIR
+    p.add_argument("--kvasir_dir",
+                   default=DATASET_CONFIGS["KVASIR"]["default_kvasir_dir"],
+                   help="Root of Kvasir-SEG dataset (contains images/ and masks/)")
 
     # Output
     p.add_argument("--output_dir", default="/kaggle/working",

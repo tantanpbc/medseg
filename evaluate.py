@@ -7,6 +7,8 @@ Usage:
     python evaluate.py --model segformer_b0 --checkpoint ./outputs/segformer_b0.pth
                        --acdc_dir /data/ACDC --output_dir ./outputs
     python evaluate.py --model deeplabv3_resnet50 --dataset ACDC
+    python evaluate.py --model unet_vanilla --dataset KVASIR
+                       --kvasir_dir /data/kvasir-seg/Kvasir-SEG
 """
 
 import gc
@@ -21,7 +23,7 @@ from tqdm.auto import tqdm
 
 from config import (
     seed_everything, parse_args,
-    MODEL_CONFIGS, DATASET_CONFIGS, NUM_CLASSES, FIXED_VIZ_IDX,
+    MODEL_CONFIGS, DATASET_CONFIGS, FIXED_VIZ_IDX,
 )
 from models.registry import build_model
 from datasets.registry import get_dataset_kwargs, get_num_classes
@@ -30,19 +32,29 @@ from utils import (
     compute_model_size, benchmark_latency,
 )
 
-# Class mapping for professional reporting and logging
-CLASS_NAMES = {1: "RV (Right Ventricle)", 2: "MYO (Myocardium)", 3: "LV (Left Ventricle)"}
-
 
 def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
     """Run full evaluation with per-class metrics and export results."""
-    num_classes = get_num_classes(dataset_name)
+    # ── Dataset-aware config (replaces all hardcoded class lists) ──
+    dataset_cfg    = DATASET_CONFIGS[dataset_name.upper()]
+    num_classes    = dataset_cfg["num_classes"]
+    ACTIVE_CLASSES = dataset_cfg["foreground_classes"]   # [1,2,3] ACDC | [2,3] CAMUS | [1] KVASIR
+    CLASS_NAMES    = {
+        i: name
+        for i, name in enumerate(dataset_cfg["class_names"])
+        if i > 0   # skip background
+    }
+
     os.makedirs(output_dir, exist_ok=True)
     model.eval()
 
     # ---- Efficiency metrics ----
     model_size_mb = compute_model_size(model)
-    latency_ms = benchmark_latency(model, device, warmup=5, runs=20)
+    latency_ms    = benchmark_latency(
+        model, device,
+        input_size=(1, dataset_cfg["in_channels"], 256, 256),
+        warmup=5, runs=20,
+    )
     gc.collect()
     torch.cuda.empty_cache()
     print(f"Model Size: {model_size_mb:.2f} MB | Latency: {latency_ms:.2f} ms/sample")
@@ -52,15 +64,7 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
     class_iou_lists  = {cls: [] for cls in range(1, num_classes)}
     class_hd95_lists = {cls: [] for cls in range(1, num_classes)}
     all_pixel_acc = []
-    all_preds = []
-
-    # Define active evaluation classes dynamically based on dataset selection
-    if dataset_name.upper() == "CAMUS":
-        # Explicitly track only MYO (2) and LV (3) for CAMUS
-        ACTIVE_CLASSES = [2, 3]
-    else:
-        # Track all classes (RV, MYO, LV) for ACDC
-        ACTIVE_CLASSES = [1, 2, 3]
+    all_preds     = []
 
     struct = generate_binary_structure(2, 1)
 
@@ -74,27 +78,27 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
             if isinstance(logits, tuple):
                 logits = logits[0]
             pred_mask = logits.argmax(dim=1).squeeze().cpu().numpy().astype(np.uint8)
-            gt_np = gt_mask.cpu().numpy().astype(np.uint8)
+            gt_np     = gt_mask.cpu().numpy().astype(np.uint8)
 
             # Calculate sample-level global pixel accuracy
             all_pixel_acc.append((pred_mask == gt_np).mean() * 100)
 
             # Calculate per-class Dice and IoU for the current sample
             for cls in range(1, num_classes):
-                pred_cls = (pred_mask == cls)
-                gt_cls = (gt_np == cls)
+                pred_cls     = (pred_mask == cls)
+                gt_cls       = (gt_np == cls)
                 intersection = (pred_cls & gt_cls).sum()
-                union = (pred_cls | gt_cls).sum()
+                union        = (pred_cls | gt_cls).sum()
 
                 if gt_cls.sum() > 0 or pred_cls.sum() > 0:
                     dice = (2 * intersection) / (pred_cls.sum() + gt_cls.sum() + 1e-8)
-                    iou = intersection / (union + 1e-8)
+                    iou  = intersection / (union + 1e-8)
                     class_dice_lists[cls].append(dice)
                     class_iou_lists[cls].append(iou)
 
             # Calculate per-class 95th percentile Hausdorff Distance (HD95)
             for cls in range(1, num_classes):
-                pred_mask_cls = (pred_mask == cls).astype(bool)
+                pred_mask_cls   = (pred_mask == cls).astype(bool)
                 target_mask_cls = (gt_np == cls).astype(bool)
 
                 if not pred_mask_cls.any() and not target_mask_cls.any():
@@ -106,14 +110,14 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
                     class_hd95_lists[cls].append(max_dist)
                     continue
 
-                pred_border = pred_mask_cls ^ binary_erosion(pred_mask_cls, struct)
+                pred_border   = pred_mask_cls ^ binary_erosion(pred_mask_cls, struct)
                 target_border = target_mask_cls ^ binary_erosion(target_mask_cls, struct)
 
                 if not pred_border.any() or not target_border.any():
                     continue
 
                 dt_target = distance_transform_edt(~pred_border)
-                dt_pred = distance_transform_edt(~target_border)
+                dt_pred   = distance_transform_edt(~target_border)
 
                 surface_distances = np.concatenate([dt_target[target_border], dt_pred[pred_border]])
                 class_hd95_lists[cls].append(np.percentile(surface_distances, 95))
@@ -123,10 +127,10 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
                 all_preds.append(pred_mask)
 
     # Compute final mean metrics across all items for each class
-    final_metrics = {}
-    mean_dice_accumulator = []
-    mean_iou_accumulator = []
-    mean_hd95_accumulator = []
+    final_metrics          = {}
+    mean_dice_accumulator  = []
+    mean_iou_accumulator   = []
+    mean_hd95_accumulator  = []
 
     for cls in range(1, num_classes):
         c_dice = np.mean(class_dice_lists[cls]) if class_dice_lists[cls] else 0.0
@@ -137,13 +141,13 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
         final_metrics[f"iou_cls_{cls}"]  = c_iou
         final_metrics[f"hd95_cls_{cls}"] = c_hd95
 
-        # Only accumulate into the foreground mean if the class belongs to the active dataset mode
+        # Only accumulate into the foreground mean if class belongs to active dataset classes
         if cls in ACTIVE_CLASSES:
             mean_dice_accumulator.append(c_dice)
             mean_iou_accumulator.append(c_iou)
             mean_hd95_accumulator.append(c_hd95)
 
-    # Calculate overall foreground averages cleanly using active valid subsets
+    # Calculate overall foreground averages using active valid subsets
     dice_score = np.mean(mean_dice_accumulator) if mean_dice_accumulator else 0.0
     iou_score  = np.mean(mean_iou_accumulator)  if mean_iou_accumulator  else 0.0
     hd95_score = np.mean(mean_hd95_accumulator) if mean_hd95_accumulator else 0.0
@@ -171,7 +175,7 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
     print(f"==================================================")
 
     # ---- Export extended metrics CSV ----
-    tag = dataset_name.lower()
+    tag         = dataset_name.lower()
     export_data = {
         "model":          model_name,
         "dataset":        tag,
@@ -188,7 +192,7 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
         export_data[f"iou_cls_{cls}"]  = final_metrics[f"iou_cls_{cls}"]
         export_data[f"hd95_cls_{cls}"] = final_metrics[f"hd95_cls_{cls}"]
 
-    csv_path = os.path.join(output_dir, f"{model_name}_{tag}_metrics.csv")
+    csv_path   = os.path.join(output_dir, f"{model_name}_{tag}_metrics.csv")
     metrics_df = pd.DataFrame([export_data])
     metrics_df.to_csv(csv_path, index=False)
 
@@ -203,13 +207,13 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
     print(f"Artifacts successfully exported to {output_dir}")
 
     return {
-        "dice": dice_score,
-        "iou": iou_score,
-        "hd95": hd95_score,
-        "pixel_acc": pixel_acc,
+        "dice":          dice_score,
+        "iou":           iou_score,
+        "hd95":          hd95_score,
+        "pixel_acc":     pixel_acc,
         "model_size_mb": model_size_mb,
-        "latency_ms": latency_ms,
-        "per_class": final_metrics,
+        "latency_ms":    latency_ms,
+        "per_class":     final_metrics,
     }
 
 
@@ -221,8 +225,8 @@ def main():
     model_config = MODEL_CONFIGS[args.model]
 
     # Build validation loader
-    ds_kwargs = get_dataset_kwargs(args.dataset, args)
-    hp = model_config["hyperparams"]
+    ds_kwargs  = get_dataset_kwargs(args.dataset, args)
+    hp         = model_config["hyperparams"]
     batch_size = args.batch_size or hp.get("batch_size", hp.get("batch_size_b", 16))
 
     _, _, val_dataset, val_loader = get_loaders(
@@ -243,11 +247,15 @@ def main():
             f"Pass --checkpoint /path/to/model.pth or --output_dir with the saved .pth"
         )
 
-    # Load model
-    model_kwargs = dict(model_config["model_kwargs"])
+    # ── Load model — override in_channels and out_channels from dataset config ──
+    model_kwargs   = dict(model_config["model_kwargs"])
     encoder_config = model_config.get("encoder_config", {})
     model_kwargs.update(encoder_config)
+    dataset_cfg = DATASET_CONFIGS[args.dataset.upper()]
+    model_kwargs["in_channels"]  = dataset_cfg["in_channels"]
+    model_kwargs["out_channels"] = dataset_cfg["num_classes"]
     model = build_model(args.model, **model_kwargs)
+
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["state_dict"])
     model = nn.DataParallel(model)

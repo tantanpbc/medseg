@@ -12,6 +12,7 @@ import os
 
 from datasets.acdc import ACDCDataset
 from datasets.camus import CAMUSDataset
+from datasets.kvasir import KvasirDataset
 
 
 def build_dataset(dataset_name, transform=None, **kwargs):
@@ -19,7 +20,7 @@ def build_dataset(dataset_name, transform=None, **kwargs):
     Instantiate the correct dataset class by name.
 
     Args:
-        dataset_name: One of ``"ACDC"``, ``"CAMUS"``.
+        dataset_name: One of ``"ACDC"``, ``"CAMUS"``, ``"KVASIR"``.
         transform:    Optional Albumentations augmentation.
         **kwargs:     Dataset-specific arguments (paths, etc.).
 
@@ -34,16 +35,22 @@ def build_dataset(dataset_name, transform=None, **kwargs):
             masks_dir=kwargs["masks_dir"],
             transform=transform,
         )
+    elif dataset_name == "KVASIR":
+        return KvasirDataset(
+            images_dir=kwargs["images_dir"],
+            masks_dir=kwargs["masks_dir"],
+            transform=transform,
+        )
     else:
         raise ValueError(
             f"Unknown dataset: {dataset_name!r}. "
-            f"Available: 'ACDC', 'CAMUS'."
+            f"Available: 'ACDC', 'CAMUS', 'KVASIR'."
         )
 
 
 def get_num_classes(dataset_name):
     """Return the number of segmentation classes for a given dataset."""
-    _NUM_CLASSES = {"ACDC": 4, "CAMUS": 4}
+    _NUM_CLASSES = {"ACDC": 4, "CAMUS": 4, "KVASIR": 2}
     return _NUM_CLASSES.get(dataset_name, 4)
 
 
@@ -61,6 +68,11 @@ def get_dataset_kwargs(dataset_name, args):
         return {
             "frames_dir": args.camus_frames_dir,
             "masks_dir": args.camus_masks_dir,
+        }
+    elif dataset_name == "KVASIR":
+        return {
+            "images_dir": os.path.join(args.kvasir_dir, "images"),
+            "masks_dir":  os.path.join(args.kvasir_dir, "masks"),
         }
     else:
         raise ValueError(f"Unknown dataset: {dataset_name!r}")

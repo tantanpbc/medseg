@@ -223,10 +223,10 @@ class MiTEncoder(nn.Module):
 
 # ────────────────────────────── Pretrained weight loader ──────────────────────────────
 
-def load_pretrained_encoder(model, repo_id):
+def load_pretrained_encoder(model, repo_id, in_channels=1):
     """
     Load pretrained SegFormer encoder weights from HuggingFace
-    and adapt for grayscale (single-channel) input.
+    and adapt for grayscale or RGB input.
 
     Works for any SegFormer variant (B0–B5) — just pass the right
     ``repo_id``.
@@ -292,11 +292,13 @@ def load_pretrained_encoder(model, repo_id):
         if "k" in parts and "v" in parts:
             converted[kv_key] = torch.cat([parts["k"], parts["v"]], dim=0)
 
-    # ── Grayscale adaptation ──
     # Average the RGB input projection weights to a single channel
     proj_key = "patch_embeds.0.proj.weight"
     if proj_key in converted and converted[proj_key].shape[1] == 3:
-        converted[proj_key] = converted[proj_key].mean(dim=1, keepdim=True)
+        if in_channels == 1:
+            # Grayscale: average the 3 RGB channels into 1
+            converted[proj_key] = converted[proj_key].mean(dim=1, keepdim=True)
+        # in_channels == 3: ImageNet weights already match RGB input
 
     result = model.load_state_dict(converted, strict=False)
     print(
@@ -311,7 +313,7 @@ def load_pretrained_encoder(model, repo_id):
 
 class SegFormerDecoder(nn.Module):
 
-    def __init__(self, in_channels=None, decoder_dim=256, num_classes=NUM_CLASSES, dropout=0.1):
+    def __init__(self, in_channels=None, decoder_dim=256, out_channels=NUM_CLASSES, dropout=0.1):
         super().__init__()
         if in_channels is None:
             in_channels = _DEFAULT_EMBED_DIMS
@@ -323,7 +325,7 @@ class SegFormerDecoder(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.dropout = nn.Dropout2d(dropout)
-        self.classifier = nn.Conv2d(decoder_dim, num_classes, kernel_size=1)
+        self.classifier = nn.Conv2d(decoder_dim, out_channels, kernel_size=1)
 
     def forward(self, feature_maps, input_size=None):
         _, _, H, W = feature_maps[0].shape
@@ -347,7 +349,7 @@ class SegFormerDecoder(nn.Module):
 
 class SegFormer(nn.Module):
 
-    def __init__(self, num_classes=NUM_CLASSES, decoder_dim=256, in_channels=1,
+    def __init__(self, out_channels=NUM_CLASSES, decoder_dim=256, in_channels=1,
                  embed_dims=None, depths=None, num_heads=None, sr_ratios=None,
                  mlp_ratio=4, drop_path_rate=0.1):
         super().__init__()
@@ -365,7 +367,7 @@ class SegFormer(nn.Module):
         self.decoder = SegFormerDecoder(
             in_channels=encoder_out_channels,
             decoder_dim=decoder_dim,
-            num_classes=num_classes,
+            out_channels=out_channels,
         )
 
     def forward(self, x):

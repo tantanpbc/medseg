@@ -28,10 +28,13 @@ def build_model(model_name, **kwargs):
     elif model_name == "unet_resnet34":
         from models.unet_resnet34 import UNetResnet34
         return UNetResnet34(**kwargs)
+    elif model_name == "unet_vanilla":
+        from models.unet_vanilla import UNetVanilla
+        return UNetVanilla(**kwargs)
     else:
         raise ValueError(
             f"Unknown model: {model_name!r}. "
-            f"Available: 'segformer_b0', 'deeplabv3_resnet50', 'unet_resnet34'."
+            f"Available: 'segformer_b0', 'deeplabv3_resnet50', 'unet_resnet34', 'unet_vanilla'."
         )
 
 
@@ -47,6 +50,8 @@ def get_backbone_attr(model_name):
     elif model_name == "segformer_b0":
         return "encoder"
     elif model_name == "unet_resnet34":
+        return "encoder"
+    elif model_name == "unet_vanilla":
         return "encoder"
     else:
         raise ValueError(f"Unknown model: {model_name!r}")

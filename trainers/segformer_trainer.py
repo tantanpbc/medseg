@@ -111,6 +111,10 @@ def train(model_name, model, device, args, model_config,
             )
 
     # ── Stage C: Extended fine-tuning ──
+    optimizer = torch.optim.AdamW([
+        {"params": getattr(base_model, backbone_attr).parameters(), "lr": lr_b * 0.5},
+        {"params": base_model.decoder.parameters(), "lr": lr_a * 0.25},
+    ])
     for epoch in range(epochs_b):
         print(f"\n[Stage C - Epoch {epoch + 1}/{epochs_b}]")
         train_fn(train_loader, model, optimizer, loss_fn, scaler, device)
@@ -123,6 +127,10 @@ def train(model_name, model, device, args, model_config,
             )
 
     # ── Stage D: Final fine-tuning ──
+    optimizer = torch.optim.AdamW([
+        {"params": getattr(base_model, backbone_attr).parameters(), "lr": lr_b * 0.1},
+        {"params": base_model.decoder.parameters(), "lr": lr_a * 0.02},
+    ])
     for epoch in range(epochs_b):
         print(f"\n[Stage D - Epoch {epoch + 1}/{epochs_b}]")
         train_fn(train_loader, model, optimizer, loss_fn, scaler, device)

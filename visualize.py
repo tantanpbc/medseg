@@ -51,7 +51,7 @@ def visualize_predictions(model, device, val_dataset, output_dir,
     for row, idx in enumerate(fixed_viz_idx):
         real_idx = idx % len(val_dataset)
         img, gt_mask = val_dataset[real_idx]
-        img_np = img.squeeze().cpu().numpy()
+        img_np = img.cpu().numpy()
         gt_np  = gt_mask.cpu().numpy().astype(np.uint8)
 
         img_input = img.unsqueeze(0).to(device)
@@ -65,9 +65,16 @@ def visualize_predictions(model, device, val_dataset, output_dir,
         pred_color = colorize_mask(pred_mask)
 
         # Normalise image for display
-        img_display = np.clip(img_np, -3, 3)
-        img_display = (img_display - img_display.min()) / (img_display.max() - img_display.min() + 1e-8)
-        img_rgb = cv2.cvtColor((img_display * 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+        if img_np.shape[0] == 1:
+            # Grayscale — squeeze to (H, W) then convert to RGB
+            img_display = np.clip(img_np.squeeze(), -3, 3)
+            img_display = (img_display - img_display.min()) / (img_display.max() - img_display.min() + 1e-8)
+            img_rgb = cv2.cvtColor((img_display * 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+        else:
+            # RGB — move channels to last dim (C, H, W) → (H, W, C)
+            img_display = np.clip(img_np.transpose(1, 2, 0), -3, 3)
+            img_display = (img_display - img_display.min()) / (img_display.max() - img_display.min() + 1e-8)
+            img_rgb = (img_display * 255).astype(np.uint8)
         overlay = cv2.addWeighted(img_rgb, 0.5, pred_color, 0.5, 0)
 
         axes[row, 0].imshow(gt_color)
