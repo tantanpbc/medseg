@@ -31,6 +31,13 @@ def build_model(model_name, **kwargs):
     elif model_name == "unet_vanilla":
         from models.unet_vanilla import UNetVanilla
         return UNetVanilla(**kwargs)
+    elif model_name == "swin_unet_tiny":
+        from models.swin_unet import SwinUNet
+        return SwinUNet(
+            swin_model="swin_tiny_patch4_window7_224",
+            decoder_channels=[768, 384, 192, 96],
+            **kwargs
+        )
     else:
         raise ValueError(
             f"Unknown model: {model_name!r}. "

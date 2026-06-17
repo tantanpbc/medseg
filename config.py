@@ -125,6 +125,24 @@ MODEL_CONFIGS = {
             "out_channels": NUM_CLASSES,
         },
     },
+    "swin_unet_tiny": {
+        "backbone_attr": "encoder",
+        "hyperparams": {
+            "lr_a": 1e-4,               # Stage A: frozen encoder warm-up
+            "lr_b": 1e-5,               # Stage B: unfrozen fine-tuning
+            "batch_size_a": 32,         # Larger batch for stage A (frozen)
+            "batch_size_b": 16,         # Smaller batch for stage B (fine-tuning)
+            "epochs_a": 20,             # 20 epochs frozen
+            "epochs_b": 25,             # 25 epochs unfrozen
+        },
+        "model_kwargs": {
+            "in_channels": 1,           # Grayscale support
+            "out_channels": 4,          # ACDC default
+            "pretrained": True,         # Use ImageNet-pretrained encoder
+            "swin_model": "swin_tiny_patch4_window7_224",
+            "decoder_channels": [768, 384, 192, 96],
+        },
+    },
 }
 
 

@@ -30,6 +30,8 @@ _TRAINERS = {
     "deeplabv3_resnet50": "trainers.deeplabv3_trainer",
     "unet_vanilla":        "trainers.unet_vanilla_trainer",
     "unet_resnet34":      "trainers.unet_resnet34_trainer",
+    "swin_unet_tiny":     "trainers.swin_unet_trainer",
+    "swin_unet_small":    "trainers.swin_unet_trainer",
 }
 
 
