@@ -13,7 +13,7 @@ def build_model(model_name, **kwargs):
     Instantiate the correct model class by name.
 
     Args:
-        model_name: One of ``"segformer_b0"``, ``"deeplabv3_resnet50"``.
+        model_name: One of ``"segformer_b0"``, ``"deeplabv3_resnet50"``, ``"swin_unet_tiny"``, etc.
         **kwargs:   Forwarded to the model constructor.
 
     Returns:
@@ -33,15 +33,27 @@ def build_model(model_name, **kwargs):
         return UNetVanilla(**kwargs)
     elif model_name == "swin_unet_tiny":
         from models.swin_unet import SwinUNet
+        kwargs.pop("swin_model", None)
+        kwargs.pop("decoder_channels", None)
         return SwinUNet(
             swin_model="swin_tiny_patch4_window7_224",
+            decoder_channels=[768, 384, 192, 96],
+            **kwargs  # pretrained_path forwarded transparently if present
+        )
+    elif model_name == "swin_unet_small":
+        from models.swin_unet import SwinUNet
+        kwargs.pop("swin_model", None)
+        kwargs.pop("decoder_channels", None)
+        return SwinUNet(
+            swin_model="swin_small_patch4_window7_224",
             decoder_channels=[768, 384, 192, 96],
             **kwargs
         )
     else:
         raise ValueError(
             f"Unknown model: {model_name!r}. "
-            f"Available: 'segformer_b0', 'deeplabv3_resnet50', 'unet_resnet34', 'unet_vanilla'."
+            f"Available: 'segformer_b0', 'deeplabv3_resnet50', 'unet_resnet34', 'unet_vanilla', "
+            f"'swin_unet_tiny', 'swin_unet_small'."
         )
 
 
@@ -50,7 +62,7 @@ def get_backbone_attr(model_name):
     Return the name of the backbone/encoder attribute for freeze/unfreeze.
 
     DeepLabv3+ exposes its pretrained encoder as ``model.backbone``,
-    while SegFormer uses ``model.encoder``.
+    while SegFormer uses ``model.encoder``, and Swin-UNet uses ``model.encoder``.
     """
     if model_name == "deeplabv3_resnet50":
         return "backbone"
@@ -59,6 +71,8 @@ def get_backbone_attr(model_name):
     elif model_name == "unet_resnet34":
         return "encoder"
     elif model_name == "unet_vanilla":
+        return "encoder"
+    elif model_name in ("swin_unet_tiny", "swin_unet_small"):
         return "encoder"
     else:
         raise ValueError(f"Unknown model: {model_name!r}")

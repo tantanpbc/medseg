@@ -31,7 +31,7 @@ def seed_everything(seed: int = SEED):
 # ────────────────────────────── Pipeline constants ──────────────────────────────
 
 NUM_CLASSES = 4          # 0:BG, 1:RV, 2:MYO, 3:LV
-IMAGE_SIZE = (256, 256)
+IMAGE_SIZE = (256, 256)  # <-- Global resolution anchor constant
 
 # Cardiac structure colormap for visualization
 ACDC_COLORMAP = {
@@ -128,18 +128,36 @@ MODEL_CONFIGS = {
     "swin_unet_tiny": {
         "backbone_attr": "encoder",
         "hyperparams": {
-            "lr_a": 1e-4,               # Stage A: frozen encoder warm-up
-            "lr_b": 1e-5,               # Stage B: unfrozen fine-tuning
-            "batch_size_a": 32,         # Larger batch for stage A (frozen)
-            "batch_size_b": 16,         # Smaller batch for stage B (fine-tuning)
-            "epochs_a": 20,             # 20 epochs frozen
-            "epochs_b": 25,             # 25 epochs unfrozen
+            "lr_a": 3e-5,               # Stage A: frozen encoder warm-up
+            "lr_b": 1e-6,               # Stage B: unfrozen encoder fine-tuning
+            "batch_size_a": 32,
+            "batch_size_b": 16,
+            "epochs_a": 20,
+            "epochs_b": 25,
         },
         "model_kwargs": {
-            "in_channels": 1,           # Grayscale support
-            "out_channels": 4,          # ACDC default
-            "pretrained": True,         # Use ImageNet-pretrained encoder
+            "in_channels": 1,
+            "out_channels": NUM_CLASSES,
+            "pretrained": True,
             "swin_model": "swin_tiny_patch4_window7_224",
+            "decoder_channels": [768, 384, 192, 96],
+        },
+    },
+    "swin_unet_small": {
+        "backbone_attr": "encoder",
+        "hyperparams": {
+            "lr_a": 8e-5,               # Slightly lower LR for larger model
+            "lr_b": 5e-6,
+            "batch_size_a": 24,
+            "batch_size_b": 12,
+            "epochs_a": 20,
+            "epochs_b": 25,
+        },
+        "model_kwargs": {
+            "in_channels": 1,
+            "out_channels": NUM_CLASSES,
+            "pretrained": True,
+            "swin_model": "swin_small_patch4_window7_224",
             "decoder_channels": [768, 384, 192, 96],
         },
     },
@@ -154,21 +172,21 @@ DATASET_CONFIGS = {
         "in_channels":        1,
         "foreground_classes": [1, 2, 3],
         "class_names":        ["Background", "RV (Right Ventricle)", "MYO (Myocardium)", "LV (Left Ventricle)"],
-        "default_acdc_dir":   "/kaggle/input/acdc-dataset/ACDC_preprocessed",
+        "default_acdc_dir":   "/home/tanht/medseg/data/ACDC/ACDC_preprocessed",
     },
     "CAMUS": {
-        "num_classes":        4,  # stored as 0,1,2,3 but only 2,3 are foreground
+        "num_classes":        4,  
         "in_channels":        1,
         "foreground_classes": [2, 3],
         "class_names":        ["Background", "RV (Right Ventricle)", "MYO (Myocardium)", "LV (Left Ventricle)"],
-        "default_camus_dir":  "/kaggle/input/parsakh/camus-echocardiography-image-dataset/camus-echocardiography-image-dataset",
+        "default_camus_dir":  "/home/tanht/medseg/data/CAMUS",
     },
     "KVASIR": {
         "num_classes":        2,
         "in_channels":        3,
         "foreground_classes": [1],
         "class_names":        ["Background", "Polyp"],
-        "default_kvasir_dir": "/kaggle/input/kvasir-seg/Kvasir-SEG",
+        "default_kvasir_dir": "/home/tanht/medseg/data/KVASIR/kvasir-seg",
     },
 }
 
@@ -186,6 +204,10 @@ def parse_args():
     p.add_argument("--dataset",  default="ACDC",
                    choices=list(DATASET_CONFIGS.keys()),
                    help="Dataset to use")
+
+    # Global Image Size Override Config
+    p.add_argument("--img_size", type=int, default=IMAGE_SIZE[0],
+                   help="Global input image resolution (width/height dimensions)")
 
     # Data paths — ACDC
     p.add_argument("--acdc_dir",
@@ -207,7 +229,7 @@ def parse_args():
                    help="Root of Kvasir-SEG dataset (contains images/ and masks/)")
 
     # Output
-    p.add_argument("--output_dir", default="/kaggle/working",
+    p.add_argument("--output_dir", default="/home/tanht/medseg/output",
                    help="Directory for checkpoints & exports")
 
     # Generic training overrides (applied on top of model-specific defaults)
@@ -226,13 +248,17 @@ def parse_args():
     p.add_argument("--load_model", action="store_true", help="Resume from checkpoint")
     p.add_argument("--checkpoint", default=None,        help="Path to .pth checkpoint")
 
+    # Pretrained weights 
+    p.add_argument("--pretrained_path", default="/home/tanht/medseg/data/pretrained_weights/swin_tiny_patch4_window7_224.pth",
+                   help="Local path to pretrained encoder weights (.pth). "
+                        "If not set, weights are downloaded from timm on first use.")
+
     # Misc
     p.add_argument("--skip_train", action="store_true", help="Skip training; run evaluation only")
     p.add_argument("--skip_viz",   action="store_true", help="Skip matplotlib visualisation")
 
     args = p.parse_args()
 
-    # Derive CAMUS sub-paths from camus_dir if not explicitly provided
     if args.camus_frames_dir is None:
         args.camus_frames_dir = os.path.join(args.camus_dir, "frames")
     if args.camus_masks_dir is None:
