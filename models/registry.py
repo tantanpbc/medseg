@@ -9,20 +9,10 @@ To add a new model:
 
 
 def build_model(model_name, **kwargs):
-    """
-    Instantiate the correct model class by name.
-
-    Args:
-        model_name: One of ``"segformer_b0"``, ``"deeplabv3_resnet50"``, ``"swin_unet_tiny"``, etc.
-        **kwargs:   Forwarded to the model constructor.
-
-    Returns:
-        A ``nn.Module`` instance.
-    """
     if model_name == "deeplabv3_resnet50":
         from models.deeplabv3 import DeepLabv3plus
         return DeepLabv3plus(**kwargs)
-    elif model_name == "segformer_b0":
+    elif model_name in ("segformer_b0", "segformer_b5"):
         from models.segformer import SegFormer
         return SegFormer(**kwargs)
     elif model_name == "unet_resnet34":
@@ -35,44 +25,38 @@ def build_model(model_name, **kwargs):
         from models.swin_unet import SwinUNet
         kwargs.pop("swin_model", None)
         kwargs.pop("decoder_channels", None)
-        return SwinUNet(
-            swin_model="swin_tiny_patch4_window7_224",
-            decoder_channels=[768, 384, 192, 96],
-            **kwargs  # pretrained_path forwarded transparently if present
-        )
+        return SwinUNet(swin_model="swin_tiny_patch4_window7_224", **kwargs)
     elif model_name == "swin_unet_small":
         from models.swin_unet import SwinUNet
         kwargs.pop("swin_model", None)
         kwargs.pop("decoder_channels", None)
-        return SwinUNet(
-            swin_model="swin_small_patch4_window7_224",
-            decoder_channels=[768, 384, 192, 96],
-            **kwargs
-        )
+        return SwinUNet(swin_model="swin_small_patch4_window7_224", **kwargs)
+    elif model_name == "swin_unet_base":
+        from models.swin_unet import SwinUNet
+        kwargs.pop("swin_model", None)
+        kwargs.pop("decoder_channels", None)
+        return SwinUNet(swin_model="swin_base_patch4_window7_224", **kwargs)
     else:
-        raise ValueError(
-            f"Unknown model: {model_name!r}. "
-            f"Available: 'segformer_b0', 'deeplabv3_resnet50', 'unet_resnet34', 'unet_vanilla', "
-            f"'swin_unet_tiny', 'swin_unet_small'."
-        )
+        available = [
+            "segformer_b0", "segformer_b5", "deeplabv3_resnet50",
+            "unet_resnet34", "unet_vanilla",
+            "swin_unet_tiny", "swin_unet_small", "swin_unet_base",
+        ]
+        raise ValueError(f"Unknown model: {model_name!r}. Available: {available}")
 
 
 def get_backbone_attr(model_name):
-    """
-    Return the name of the backbone/encoder attribute for freeze/unfreeze.
-
-    DeepLabv3+ exposes its pretrained encoder as ``model.backbone``,
-    while SegFormer uses ``model.encoder``, and Swin-UNet uses ``model.encoder``.
-    """
-    if model_name == "deeplabv3_resnet50":
-        return "backbone"
-    elif model_name == "segformer_b0":
-        return "encoder"
-    elif model_name == "unet_resnet34":
-        return "encoder"
-    elif model_name == "unet_vanilla":
-        return "encoder"
-    elif model_name in ("swin_unet_tiny", "swin_unet_small"):
-        return "encoder"
-    else:
+    """Return the attribute name of the encoder/backbone for freeze/unfreeze."""
+    _BACKBONE_ATTRS = {
+        "deeplabv3_resnet50": "backbone",
+        "segformer_b0":       "encoder",
+        "segformer_b5":       "encoder",
+        "unet_resnet34":      "encoder",
+        "unet_vanilla":       "encoder",
+        "swin_unet_tiny":     "encoder",
+        "swin_unet_small":    "encoder",
+        "swin_unet_base":     "encoder",
+    }
+    if model_name not in _BACKBONE_ATTRS:
         raise ValueError(f"Unknown model: {model_name!r}")
+    return _BACKBONE_ATTRS[model_name]

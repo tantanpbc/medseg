@@ -33,7 +33,7 @@ from utils import (
 )
 
 
-def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
+def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name, split="test"):
     """Run full evaluation with per-class metrics and export results."""
     # ── Dataset-aware config (replaces all hardcoded class lists) ──
     dataset_cfg    = DATASET_CONFIGS[dataset_name.upper()]
@@ -179,6 +179,7 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
     export_data = {
         "model":          model_name,
         "dataset":        tag,
+        "split":          split,          # "val" during training, "test" for final evaluation
         "pixel_accuracy": pixel_acc,
         "mean_dice":      dice_score,
         "mean_iou":       iou_score,
@@ -192,12 +193,12 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name):
         export_data[f"iou_cls_{cls}"]  = final_metrics[f"iou_cls_{cls}"]
         export_data[f"hd95_cls_{cls}"] = final_metrics[f"hd95_cls_{cls}"]
 
-    csv_path   = os.path.join(output_dir, f"{model_name}_{tag}_metrics.csv")
+    csv_path   = os.path.join(output_dir, f"{model_name}_{tag}_{split}_metrics.csv")
     metrics_df = pd.DataFrame([export_data])
     metrics_df.to_csv(csv_path, index=False)
 
     # Export compressed predictions matrix
-    npz_path = os.path.join(output_dir, f"{model_name}_{tag}_predictions.npz")
+    npz_path = os.path.join(output_dir, f"{model_name}_{tag}_{split}_predictions.npz")
     np.savez(
         npz_path,
         predictions=np.array(all_preds),
@@ -223,31 +224,29 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model_config = MODEL_CONFIGS[args.model]
+    ds_kwargs    = get_dataset_kwargs(args.dataset, args)
+    hp           = model_config["hyperparams"]
+    batch_size   = args.batch_size or hp.get("batch_size", hp.get("batch_size_b", 16))
 
-    # Build validation loader
-    ds_kwargs  = get_dataset_kwargs(args.dataset, args)
-    hp         = model_config["hyperparams"]
-    batch_size = args.batch_size or hp.get("batch_size", hp.get("batch_size_b", 16))
-
-    _, _, val_dataset, val_loader = get_loaders(
-        dataset_name=args.dataset,
-        batch_size=batch_size,
-        train_transform=None,
-        val_transform=None,
-        num_workers=args.num_workers,
-        val_split=args.val_split,
+    # Use the same deterministic split as training — test set is always the held-out partition
+    (_, _,
+     _, _,
+     test_dataset, test_loader) = get_loaders(
+        dataset_name = args.dataset,
+        batch_size   = batch_size,
+        val_split    = args.val_split,
+        test_split   = args.test_split,
+        num_workers  = args.num_workers,
         **ds_kwargs,
     )
 
-    # Resolve checkpoint path
     checkpoint_path = args.checkpoint or os.path.join(args.output_dir, f"{args.model}.pth")
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(
             f"Checkpoint not found: {checkpoint_path}\n"
-            f"Pass --checkpoint /path/to/model.pth or --output_dir with the saved .pth"
+            f"Pass --checkpoint /path/to/model.pth or set --output_dir"
         )
 
-    # ── Load model — override in_channels and out_channels from dataset config ──
     model_kwargs   = dict(model_config["model_kwargs"])
     encoder_config = model_config.get("encoder_config", {})
     model_kwargs.update(encoder_config)
@@ -261,7 +260,9 @@ def main():
     model = nn.DataParallel(model)
     model.to(device)
 
-    evaluate(model, device, val_dataset, args.output_dir, args.dataset, model_name=args.model)
+    # Evaluate on the held-out TEST set only
+    evaluate(model, device, test_dataset, args.output_dir, args.dataset,
+             model_name=args.model, split="test")
 
 
 if __name__ == "__main__":

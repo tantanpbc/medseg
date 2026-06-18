@@ -49,6 +49,9 @@ class BaseSegmentationDataset(Dataset):
         """
         self.transform   = transform
         self.in_channels = in_channels
+        # Subclasses must populate self.samples with a list of file paths.
+        # This is read by the patient-level splitter in datasets/splitter.py.
+        self.samples = []
 
     # ── Subclass protocol ──
 

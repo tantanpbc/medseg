@@ -24,7 +24,9 @@ from utils import (
 
 
 def train(model_name, model, device, args, model_config,
-          train_dataset=None, train_loader=None, val_dataset=None, val_loader=None):
+          train_dataset=None, train_loader=None,
+          val_dataset=None,   val_loader=None,
+          test_dataset=None,  test_loader=None):
     """
     Run the 4-stage SegFormer training loop.
 
@@ -42,7 +44,8 @@ def train(model_name, model, device, args, model_config,
     epochs_a = hp["epochs_a"]
     epochs_b = hp["epochs_b"]
 
-    loss_fn = nn.CrossEntropyLoss()
+    from losses import make_loss
+    loss_fn = make_loss(args.dataset, device)
     scaler  = torch.amp.GradScaler("cuda")
     best_dice = 0.0
 
@@ -56,7 +59,10 @@ def train(model_name, model, device, args, model_config,
 
     if args.skip_train:
         print("Skipping training (--skip_train).")
-        return model, device, args, train_dataset, train_loader, val_dataset, val_loader
+        return (model, device, args,
+            train_dataset, train_loader,
+            val_dataset,   val_loader,
+            test_dataset,  test_loader)
 
     # ── Stage A: Frozen encoder warm-up ──
     set_backbone_grad(model, requires_grad=False, backbone_attr=backbone_attr)
@@ -80,14 +86,17 @@ def train(model_name, model, device, args, model_config,
     # ── Rebuild loaders with smaller batch for fine-tuning ──
     from datasets.registry import get_dataset_kwargs
     ds_kwargs = get_dataset_kwargs(args.dataset, args)
-    train_dataset, train_loader, val_dataset, val_loader = get_loaders(
-        dataset_name=args.dataset,
-        batch_size=batch_size_b,
-        train_transform=get_default_transforms(),
-        val_transform=None,
-        num_workers=args.num_workers,
-        pin_memory=PIN_MEMORY,
-        val_split=args.val_split,
+    (train_dataset, train_loader,
+     val_dataset,   val_loader,
+     test_dataset,  test_loader) = get_loaders(
+        dataset_name    = args.dataset,
+        batch_size      = batch_size_b,
+        train_transform = get_default_transforms(),
+        val_transform   = None,
+        num_workers     = args.num_workers,
+        pin_memory      = PIN_MEMORY,
+        val_split       = args.val_split,
+        test_split      = args.test_split,
         **ds_kwargs,
     )
 
@@ -148,4 +157,7 @@ def train(model_name, model, device, args, model_config,
     print(f"\nTraining complete. Best Dice: {best_dice:.4f}")
     print(f"Checkpoint saved to: {checkpoint_path}")
 
-    return model, device, args, train_dataset, train_loader, val_dataset, val_loader
+    return (model, device, args,
+            train_dataset, train_loader,
+            val_dataset,   val_loader,
+            test_dataset,  test_loader)

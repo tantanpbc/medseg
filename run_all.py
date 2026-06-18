@@ -1,11 +1,10 @@
 """
-Convenience script — runs training, evaluation, and visualisation
-in sequence with a single command.
+Convenience script — runs training, evaluation on the held-out test set,
+and visualisation in sequence.
 
 Usage:
-    python run_all.py --model segformer_b0 --dataset ACDC --acdc_dir /data/ACDC
-    python run_all.py --model deeplabv3_resnet50 --dataset ACDC --acdc_dir /data/ACDC
-    python run_all.py --model segformer_b0 --dataset CAMUS --camus_dir /data/CAMUS
+    python run_all.py --model swin_unet_base --dataset ACDC
+    python run_all.py --model segformer_b5   --dataset ACDC
 """
 
 from config import parse_args
@@ -23,21 +22,24 @@ def main():
     print("=" * 60)
 
     # ── Train ──
-    model, device, args, _, _, val_dataset, _ = train_main()
+    (model, device, args,
+     _,             _,
+     _,             _,
+     test_dataset,  _) = train_main()
 
-    # ── Evaluate ──
+    # ── Evaluate on held-out TEST set ──
     print("\n" + "=" * 60)
-    print("EVALUATION")
+    print("FINAL TEST SET EVALUATION")
     print("=" * 60)
-    metrics = evaluate(model, device, val_dataset, args.output_dir, args.dataset,
-                       model_name=args.model)
+    metrics = evaluate(model, device, test_dataset, args.output_dir, args.dataset,
+                       model_name=args.model, split="test")
 
     # ── Visualise ──
     if not args.skip_viz:
         print("\n" + "=" * 60)
         print("VISUALISATION")
         print("=" * 60)
-        visualize_predictions(model, device, val_dataset, args.output_dir, args.dataset,
+        visualize_predictions(model, device, test_dataset, args.output_dir, args.dataset,
                               model_name=args.model)
 
 

@@ -47,7 +47,8 @@ FIXED_VIZ_IDX = [5, 16, 25, 35, 45, 55, 65, 75, 86, 95,
 
 # Shared training defaults
 WEIGHT_DECAY = 1e-4
-VAL_SPLIT    = 0.2
+VAL_SPLIT    = 0.10   # 10% of patients for validation during training
+TEST_SPLIT   = 0.20   # 20% of patients held out for final test evaluation
 NUM_WORKERS  = 2
 PIN_MEMORY   = True
 
@@ -77,6 +78,31 @@ MODEL_CONFIGS = {
         "model_kwargs": {
             "out_channels": NUM_CLASSES,
             "decoder_dim": 256,
+            "in_channels": 1,
+        },
+    },
+    "segformer_b5": {
+        "backbone_attr": "encoder",
+        "pretrained_repo": "nvidia/segformer-b5-finetuned-ade-640-640",
+        "encoder_config": {
+            "embed_dims": [64, 128, 320, 512],
+            "num_heads":  [1, 2, 5, 8],
+            "depths":     [3, 6, 40, 3],
+            "sr_ratios":  [8, 4, 2, 1],
+            "mlp_ratio":  4,
+            "drop_path_rate": 0.1,
+        },
+        "hyperparams": {
+            "lr_a": 6e-4,
+            "lr_b": 6e-6,
+            "batch_size_a": 32,
+            "batch_size_b": 16,
+            "epochs_a": 15,
+            "epochs_b": 10,
+        },
+        "model_kwargs": {
+            "out_channels": NUM_CLASSES,
+            "decoder_dim": 768,
             "in_channels": 1,
         },
     },
@@ -128,37 +154,58 @@ MODEL_CONFIGS = {
     "swin_unet_tiny": {
         "backbone_attr": "encoder",
         "hyperparams": {
-            "lr_a": 3e-5,               # Stage A: frozen encoder warm-up
-            "lr_b": 1e-6,               # Stage B: unfrozen encoder fine-tuning
+            "lr_a": 1e-3,               # Stage A: frozen encoder — decoder trains at full LR
+            "lr_b": 1e-6,               # Stage B: unfrozen encoder — encoder learns slowly
             "batch_size_a": 32,
             "batch_size_b": 16,
-            "epochs_a": 20,
-            "epochs_b": 25,
+            "epochs_a": 15,             # Decoder converges fast; early-stop handles the rest
+            "epochs_b": 35,             # More budget for full fine-tuning (where gains come from)
+            "stage_a_patience": 5,      # Exit Stage A early if Dice plateaus for 5 epochs
         },
         "model_kwargs": {
             "in_channels": 1,
             "out_channels": NUM_CLASSES,
             "pretrained": True,
             "swin_model": "swin_tiny_patch4_window7_224",
-            "decoder_channels": [768, 384, 192, 96],
+            # decoder_channels intentionally omitted — auto-computed from encoder channels
         },
     },
     "swin_unet_small": {
         "backbone_attr": "encoder",
         "hyperparams": {
-            "lr_a": 8e-5,               # Slightly lower LR for larger model
-            "lr_b": 5e-6,
+            "lr_a": 1e-3,
+            "lr_b": 5e-7,
             "batch_size_a": 24,
             "batch_size_b": 12,
-            "epochs_a": 20,
-            "epochs_b": 25,
+            "epochs_a": 15,
+            "epochs_b": 35,
+            "stage_a_patience": 5,
         },
         "model_kwargs": {
             "in_channels": 1,
             "out_channels": NUM_CLASSES,
             "pretrained": True,
             "swin_model": "swin_small_patch4_window7_224",
-            "decoder_channels": [768, 384, 192, 96],
+        },
+    },
+    "swin_unet_base": {
+        # Swin-Base: 88M params — comparable scale to SegFormer-B5 (82M params).
+        # Channels: [128, 256, 512, 1024]. Auto-detected at build time.
+        "backbone_attr": "encoder",
+        "hyperparams": {
+            "lr_a": 1e-3,               # decoder warm-up (encoder frozen)
+            "lr_b": 1e-4,               # encoder fine-tune (very conservative for large model)
+            "batch_size_a": 32,         # Base is ~3× larger than Tiny — reduce batch size
+            "batch_size_b": 16,
+            "epochs_a": 25,
+            "epochs_b": 40,
+            "stage_a_patience": 5,
+        },
+        "model_kwargs": {
+            "in_channels": 1,
+            "out_channels": NUM_CLASSES,
+            "pretrained": True,
+            "swin_model": "swin_base_patch4_window7_224",
         },
     },
 }
@@ -187,6 +234,13 @@ DATASET_CONFIGS = {
         "foreground_classes": [1],
         "class_names":        ["Background", "Polyp"],
         "default_kvasir_dir": "/home/tanht/medseg/data/KVASIR/kvasir-seg",
+    },
+    "CHESTXRAY": {
+        "num_classes":           2,
+        "in_channels":           1,
+        "foreground_classes":    [1],
+        "class_names":           ["Background", "Lung"],
+        "default_chestxray_dir": "/home/tanht/medseg/data/CHESTXRAY",
     },
 }
 
@@ -228,6 +282,11 @@ def parse_args():
                    default=DATASET_CONFIGS["KVASIR"]["default_kvasir_dir"],
                    help="Root of Kvasir-SEG dataset (contains images/ and masks/)")
 
+    # Data paths — CHESTXRAY
+    p.add_argument("--chestxray_dir",
+                   default=DATASET_CONFIGS["CHESTXRAY"]["default_chestxray_dir"],
+                   help="Root of Chest X-Ray dataset (contains train_images/ and test_images/)")
+
     # Output
     p.add_argument("--output_dir", default="/home/tanht/medseg/output",
                    help="Directory for checkpoints & exports")
@@ -240,7 +299,10 @@ def parse_args():
     p.add_argument("--lr",         type=float, default=None,
                    help="Override learning rate")
     p.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY)
-    p.add_argument("--val_split",    type=float, default=VAL_SPLIT)
+    p.add_argument("--val_split",    type=float, default=VAL_SPLIT,
+                   help="Fraction of patients for validation (default: 0.10)")
+    p.add_argument("--test_split",   type=float, default=TEST_SPLIT,
+                   help="Fraction of patients held out for final test evaluation (default: 0.20)")
     p.add_argument("--num_workers",  type=int,   default=NUM_WORKERS)
     p.add_argument("--seed",         type=int,   default=SEED)
 
@@ -248,9 +310,10 @@ def parse_args():
     p.add_argument("--load_model", action="store_true", help="Resume from checkpoint")
     p.add_argument("--checkpoint", default=None,        help="Path to .pth checkpoint")
 
-    # Pretrained weights 
-    p.add_argument("--pretrained_path", default="/home/tanht/medseg/data/pretrained_weights/swin_tiny_patch4_window7_224.pth",
+    # Pretrained weights
+    p.add_argument("--pretrained_path", default=None,
                    help="Local path to pretrained encoder weights (.pth). "
+                        "Use download_swin_weights.py to generate. "
                         "If not set, weights are downloaded from timm on first use.")
 
     # Misc

@@ -21,7 +21,9 @@ from utils import (
 
 
 def train(model_name, model, device, args, model_config,
-          train_dataset=None, train_loader=None, val_dataset=None, val_loader=None):
+          train_dataset=None, train_loader=None,
+          val_dataset=None,   val_loader=None,
+          test_dataset=None,  test_loader=None):
     """
     Run the 2-stage UNet-Vanilla training loop.
 
@@ -36,7 +38,8 @@ def train(model_name, model, device, args, model_config,
     epochs_a = args.epochs if args.epochs else hp["epochs_a"]
     epochs_b = hp["epochs_b"]
 
-    loss_fn = nn.CrossEntropyLoss()
+    from losses import make_loss
+    loss_fn = make_loss(args.dataset, device)
     scaler  = torch.amp.GradScaler("cuda")
     best_dice = 0.0
 
@@ -50,7 +53,10 @@ def train(model_name, model, device, args, model_config,
 
     if args.skip_train:
         print("Skipping training (--skip_train).")
-        return model, device, args, train_dataset, train_loader, val_dataset, val_loader
+        return (model, device, args,
+            train_dataset, train_loader,
+            val_dataset,   val_loader,
+            test_dataset,  test_loader)
 
     # ── Stage 1: Full-model training ──
     optimizer = optim.AdamW(
@@ -91,4 +97,7 @@ def train(model_name, model, device, args, model_config,
     print(f"\nTraining complete. Best Dice: {best_dice:.4f}")
     print(f"Checkpoint saved to: {checkpoint_path}")
 
-    return model, device, args, train_dataset, train_loader, val_dataset, val_loader
+    return (model, device, args,
+            train_dataset, train_loader,
+            val_dataset,   val_loader,
+            test_dataset,  test_loader)

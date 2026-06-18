@@ -48,6 +48,10 @@ class CAMUSDataset(BaseSegmentationDataset):
             for f in os.listdir(self.masks_dir)
             if f.endswith(".png")
         }
+        # Full paths used by the patient-level splitter
+        self.samples = [
+            os.path.join(self.frames_dir, f) for f in self.frame_files
+        ]
 
     def __len__(self):
         return len(self.frame_files)
