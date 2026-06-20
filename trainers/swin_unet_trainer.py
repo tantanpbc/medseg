@@ -119,7 +119,7 @@ def train(model_name, model, device, args, model_config,
     scaler  = torch.amp.GradScaler("cuda")
     best_dice = 0.0
 
-    checkpoint_path = args.checkpoint or f"{args.output_dir}/{model_name}.pth"
+    checkpoint_path = args.checkpoint or f"{args.output_dir}/{model_name}_{args.dataset.lower()}.pth"
 
     if args.load_model and args.checkpoint:
         ckpt = torch.load(args.checkpoint, map_location="cpu")
@@ -156,7 +156,7 @@ def train(model_name, model, device, args, model_config,
         print(f"\n[Stage A - Epoch {epoch + 1}/{epochs_a}]")
         _train_epoch(train_loader, model, optimizer_a, loss_fn, scaler, device,
                      scheduler_a, clip_grad=1.0)
-        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device)
+        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device, dataset_name=args.dataset)
 
         if dice_score > best_dice:
             best_dice  = dice_score
@@ -182,7 +182,7 @@ def train(model_name, model, device, args, model_config,
      test_dataset,  test_loader) = get_loaders(
         dataset_name    = args.dataset,
         batch_size      = batch_size_b,
-        train_transform = get_default_transforms(),
+        train_transform = get_default_transforms(args.dataset),
         val_transform   = None,
         num_workers     = args.num_workers,
         pin_memory      = PIN_MEMORY,
@@ -212,7 +212,7 @@ def train(model_name, model, device, args, model_config,
         print(f"\n[Stage B - Epoch {epoch + 1}/{epochs_b}]")
         _train_epoch(train_loader, model, optimizer_b, loss_fn, scaler, device,
                      scheduler_b, clip_grad=0.5)   # tighter clip for fine-tuning
-        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device)
+        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device, dataset_name=args.dataset)
 
         if dice_score > best_dice:
             best_dice = dice_score

@@ -80,7 +80,7 @@ def main():
      test_dataset,  test_loader) = get_loaders(
         dataset_name    = args.dataset,
         batch_size      = batch_size,
-        train_transform = get_default_transforms(),
+        train_transform = get_default_transforms(args.dataset),
         val_transform   = None,
         num_workers     = args.num_workers,
         pin_memory      = PIN_MEMORY,

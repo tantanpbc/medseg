@@ -43,7 +43,7 @@ def train(model_name, model, device, args, model_config,
     scaler  = torch.amp.GradScaler("cuda")
     best_dice = 0.0
 
-    checkpoint_path = args.checkpoint or f"{args.output_dir}/{model_name}.pth"
+    checkpoint_path = args.checkpoint or f"{args.output_dir}/{model_name}_{args.dataset.lower()}.pth"
 
     if args.load_model and args.checkpoint:
         ckpt = torch.load(args.checkpoint, map_location="cpu")
@@ -68,7 +68,7 @@ def train(model_name, model, device, args, model_config,
     for epoch in range(epochs_a):
         print(f"\n[Stage 1 - Epoch {epoch + 1}/{epochs_a}]")
         train_fn(train_loader, model, optimizer, loss_fn, scaler, device)
-        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device)
+        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device, dataset_name=args.dataset)
         if dice_score >= best_dice:
             best_dice = dice_score
             save_checkpoint(
@@ -83,7 +83,7 @@ def train(model_name, model, device, args, model_config,
     for epoch in range(epochs_b):
         print(f"\n[Stage 2 - Epoch {epoch + 1}/{epochs_b}]")
         train_fn(train_loader, model, optimizer, loss_fn, scaler, device)
-        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device)
+        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device, dataset_name=args.dataset)
         if dice_score >= best_dice:
             best_dice = dice_score
             save_checkpoint(

@@ -1,6 +1,24 @@
 """
 Chest X-Ray Masks and Defect Detection dataset.
 
+Source: https://www.kaggle.com/datasets/azkihimmawan/chest-xray-masks-and-defect-detection
+
+Expected directory layout::
+
+    dataset_root/
+        train_images/
+            <case_id>/
+                images/
+                    <case_id>.png
+                masks/
+                    <case_id>.png
+        test_images/
+            <case_id>/
+                images/
+                    <case_id>.png
+                masks/
+                    <case_id>.png
+
 Images are grayscale chest X-rays (PA view). No colour information is
 present so images are loaded as single-channel (in_channels=1).
 
@@ -120,6 +138,38 @@ class ChestXRayDataset(BaseSegmentationDataset):
         """
         Load one grayscale X-ray and its binary lung mask.
 
+        PERFORMANCE NOTE (applies to the IMAGE only):
+            Chest X-ray PNGs in this dataset are typically exported at very
+            high native resolution (often 2000-4000px per side) — roughly
+            100x more pixels than the 256x256 IMAGE_SIZE the model actually
+            trains on. Decoding the IMAGE at full resolution and then
+            immediately throwing away ~99% of those pixels via cv2.resize()
+            in BaseSegmentationDataset.__getitem__() wastes most of the
+            decode time on every single sample, every epoch.
+
+            cv2.IMREAD_REDUCED_GRAYSCALE_4 asks libpng/libjpeg to decode
+            directly at 1/4 resolution (a cheap operation built into the
+            decoder itself), so a 3000x3000 source image decodes as if it
+            were ~750x750 — still comfortably above the 256x256 target, so
+            the final cv2.resize() in the base class loses no information
+            that would have survived the eventual downsize anyway, but the
+            decode itself is roughly 16x cheaper.
+
+        CORRECTNESS NOTE (why the MASK is NOT reduced-decoded):
+            Reduced-resolution decoding performs an internal box-filter-like
+            downsample as part of the decode itself. For a continuous-tone
+            photograph (the X-ray) this is harmless. For a BINARY mask
+            ({0,255} or {0,1}) it is not: averaging neighbouring pixels at
+            a lung boundary produces intermediate gray values (e.g. ~127)
+            that then get rounded essentially arbitrarily by the `>= 128`
+            threshold below. This silently shifts the ground-truth boundary
+            by a pixel or two at effectively random locations on every mask,
+            every epoch -- directly hurting Dice/IoU, which are boundary-
+            sensitive metrics. Masks are always decoded at full resolution;
+            the later cv2.resize(..., INTER_NEAREST) in the base class is
+            safe because nearest-neighbour resize never invents intermediate
+            values, unlike the reduced decode path.
+
         Returns:
             image: float32 array shape (H, W), pixel values in [0, 255]
             label: int64 binary array shape (H, W), values in {0, 1}
@@ -127,11 +177,25 @@ class ChestXRayDataset(BaseSegmentationDataset):
         """
         image_path, mask_path = self._pairs[idx]
 
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        # Decode the IMAGE at reduced resolution — cheap libpng/libjpeg-native
+        # downscale, avoids paying for pixels that get discarded by resize anyway.
+        from config import IMAGE_SIZE
+        min_dim = min(IMAGE_SIZE)
+
+        image = cv2.imread(image_path, cv2.IMREAD_REDUCED_GRAYSCALE_4)
+        # Safety: if the source file was already small, a 1/4 reduced decode
+        # could undersize below the model's target resolution. Fall back to
+        # full decode in that case so cv2.resize() in the base class always
+        # has at least as much detail as IMAGE_SIZE requires.
+        if image is None or min(image.shape[:2]) < min_dim:
+            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if image is None:
             raise FileNotFoundError(f"Image not found: {image_path}")
         image = image.astype(np.float32)
 
+        # Decode the MASK at FULL resolution, always — see correctness note above.
+        # Nearest-neighbour resize happens later in BaseSegmentationDataset and
+        # is safe; reduced decode is not, so it is never used for masks.
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if mask is None:
             raise FileNotFoundError(f"Mask not found: {mask_path}")

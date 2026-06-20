@@ -118,7 +118,7 @@ def main():
     )
 
     # Resolve checkpoint path
-    checkpoint_path = args.checkpoint or os.path.join(args.output_dir, f"{args.model}.pth")
+    checkpoint_path = args.checkpoint or os.path.join(args.output_dir, f"{args.model}_{args.dataset.lower()}.pth")
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(
             f"Checkpoint not found: {checkpoint_path}\n"

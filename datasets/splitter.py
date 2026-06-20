@@ -37,7 +37,7 @@ from typing import Callable, List, Tuple
 def split_dataset_indices(
     samples: List,
     patient_id_fn: Callable,
-    train_ratio: float = 0.70,
+    train_ratio: float = 0.80,
     val_ratio:   float = 0.10,
     seed:        int   = 42,
 ) -> Tuple[List[int], List[int], List[int]]:

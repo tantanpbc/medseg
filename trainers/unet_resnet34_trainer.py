@@ -1,11 +1,18 @@
 """
-UNet-ResNet34 training strategy — three-stage training with
-encoder freeze/unfreeze and progressive LR reduction.
+UNet-ResNet34 training strategy — 2-phase training matching the original
+notebook plan exactly (medseg-unet-acdc-camus-ii.ipynb, TRAIN_PHASES):
 
-Stages:
-    1 – Frozen encoder (ResNet34), decoder-only warm-up   (epochs_a, lr_a)
-    2 – Unfrozen encoder, full-model fine-tuning           (epochs_b, lr_b)
-    3 – Reduced LR fine-tuning on same optimizer           (epochs_c, lr_c)
+    Phase 1 (warmup):    encoder frozen,   10 epochs @ lr_a=1e-3
+    Phase 2 (finetune):  encoder unfrozen, 20 epochs @ lr_b=1e-4
+
+Each phase builds a FRESH Adam optimizer (only over currently-trainable
+params) plus its own CosineAnnealingLR(T_max=phase_epochs), exactly as the
+notebook does — this is not the same as decaying a single optimizer across
+phase boundaries, since starting a fresh cosine schedule at full lr_a/lr_b
+gives a different LR trajectory than continuing a single decay curve.
+
+weight_decay defaults to 1e-5 here (notebook-specific), not the repo-wide
+--weight_decay CLI default, unless explicitly overridden via hyperparams.
 """
 
 import gc
@@ -26,28 +33,30 @@ def train(model_name, model, device, args, model_config,
           val_dataset=None,   val_loader=None,
           test_dataset=None,  test_loader=None):
     """
-    Run the 3-stage UNet-ResNet34 training loop.
+    Run the 2-phase UNet-ResNet34 training loop (warmup → finetune).
 
     Returns:
-        (model, device, args, train_dataset, train_loader, val_dataset, val_loader)
+        (model, device, args,
+         train_dataset, train_loader,
+         val_dataset,   val_loader,
+         test_dataset,  test_loader)
     """
     backbone_attr = get_backbone_attr(model_name)
     hp = model_config["hyperparams"]
 
     # Allow CLI overrides
-    lr_a = args.lr if args.lr else hp["lr_a"]
-    lr_b = hp["lr_b"]
-    lr_c = hp["lr_c"]
-    epochs_a = hp["epochs_a"]
-    epochs_b = hp["epochs_b"]
-    epochs_c = hp["epochs_c"]
+    lr_a         = args.lr if args.lr else hp["lr_a"]
+    lr_b         = hp["lr_b"]
+    epochs_a     = hp["epochs_a"]
+    epochs_b     = hp["epochs_b"]
+    weight_decay = hp.get("weight_decay", args.weight_decay)   # notebook uses 1e-5
 
     from losses import make_loss
     loss_fn = make_loss(args.dataset, device)
     scaler  = torch.amp.GradScaler("cuda")
     best_dice = 0.0
 
-    checkpoint_path = args.checkpoint or f"{args.output_dir}/{model_name}.pth"
+    checkpoint_path = args.checkpoint or f"{args.output_dir}/{model_name}_{args.dataset.lower()}.pth"
 
     if args.load_model and args.checkpoint:
         ckpt = torch.load(args.checkpoint, map_location="cpu")
@@ -62,18 +71,25 @@ def train(model_name, model, device, args, model_config,
             val_dataset,   val_loader,
             test_dataset,  test_loader)
 
-    # ── Stage 1: Frozen backbone warm-up ──
+    # ── Phase 1: Encoder frozen, warm-up ──
     set_backbone_grad(model, requires_grad=False, backbone_attr=backbone_attr)
-    optimizer = optim.AdamW(
+
+    optimizer = optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=lr_a,
-        weight_decay=args.weight_decay,
+        weight_decay=weight_decay,
     )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_a)
+
+    print(f"\n{'='*60}")
+    print(f"PHASE 1: WARM-UP (Encoder Frozen) | Epochs: {epochs_a} | LR: {lr_a}")
+    print(f"{'='*60}")
 
     for epoch in range(epochs_a):
-        print(f"\n[Stage 1 - Epoch {epoch + 1}/{epochs_a}]")
+        print(f"\n[Warm-up Epoch {epoch + 1}/{epochs_a}]")
         train_fn(train_loader, model, optimizer, loss_fn, scaler, device)
-        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device)
+        scheduler.step()   # stepped once per epoch, matching the notebook
+        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device, dataset_name=args.dataset)
         if dice_score >= best_dice:
             best_dice = dice_score
             save_checkpoint(
@@ -81,33 +97,27 @@ def train(model_name, model, device, args, model_config,
                 checkpoint_path,
             )
 
-    # ── Stage 2: Unfrozen backbone fine-tuning ──
+    # ── Phase 2: Encoder unfrozen, fine-tuning ──
+    # A fresh optimizer + fresh cosine schedule, exactly as the notebook does
+    # at the top of its `for phase in TRAIN_PHASES` loop.
     set_backbone_grad(model, requires_grad=True, backbone_attr=backbone_attr)
-    optimizer = optim.AdamW(
+
+    optimizer = optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=lr_b,
-        weight_decay=args.weight_decay,
+        weight_decay=weight_decay,
     )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_b)
+
+    print(f"\n{'='*60}")
+    print(f"PHASE 2: FINE-TUNE (Encoder Unfrozen) | Epochs: {epochs_b} | LR: {lr_b}")
+    print(f"{'='*60}")
 
     for epoch in range(epochs_b):
-        print(f"\n[Stage 2 - Epoch {epoch + 1}/{epochs_b}]")
+        print(f"\n[Fine-tune Epoch {epoch + 1}/{epochs_b}]")
         train_fn(train_loader, model, optimizer, loss_fn, scaler, device)
-        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device)
-        if dice_score >= best_dice:
-            best_dice = dice_score
-            save_checkpoint(
-                {"state_dict": model.state_dict(), "optimizer": optimizer.state_dict(), "best_dice": best_dice},
-                checkpoint_path,
-            )
-
-    # ── Stage 3: Reduced LR fine-tuning ──
-    for pg in optimizer.param_groups:
-        pg["lr"] = lr_c
-
-    for epoch in range(epochs_c):
-        print(f"\n[Stage 3 - Epoch {epoch + 1}/{epochs_c}]")
-        train_fn(train_loader, model, optimizer, loss_fn, scaler, device)
-        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device)
+        scheduler.step()
+        dice_score, iou_score, pixel_acc = val_fn(val_loader, model, device, dataset_name=args.dataset)
         if dice_score >= best_dice:
             best_dice = dice_score
             save_checkpoint(

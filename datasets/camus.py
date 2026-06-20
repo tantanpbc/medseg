@@ -6,10 +6,12 @@ Expected directory layout::
 
     camus-.../
         frames/
-            patient001_frame01.png
+            frame_0000.png
+            frame_0001.png
             ...
         masks/
-            mask_patient001_frame01.png
+            mask_0000.png
+            mask_0001.png
             ...
 
 Mask pixel values: 0, 85, 170, 255 → scaled to 0, 1, 2, 3.

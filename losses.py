@@ -25,12 +25,12 @@ import torch.nn.functional as F
 #   CAMUS : BG~85%, RV~5%, MYO~5%, LV~5%   → similar to ACDC
 #   KVASIR: BG~75%, Polyp~25%               → mild imbalance
 _CE_WEIGHTS = {
-    "ACDC":      [0.1, 1.5, 1.2, 1.5],
-    "CAMUS":     [0.1, 1.3, 1.3, 1.3],
-    "KVASIR":    [0.3, 1.0],
+    "ACDC":      [1.0, 1.0, 1.0, 1.0],
+    "CAMUS":     [1.0, 1.0, 1.0, 1.0],
+    "KVASIR":    [1.0, 1.0],
     # Chest X-Ray: lung fields cover ~60% of image, background ~40%
     # Very mild imbalance — slight down-weight on background
-    "CHESTXRAY": [0.4, 1.2],
+    "CHESTXRAY": [1.0, 1.0],
 }
 
 
@@ -62,18 +62,25 @@ def soft_dice_loss(pred, target, num_classes, ignore_bg=True, smooth=1e-6):
     return loss / max(n_classes, 1)
 
 
-def make_loss(dataset_name, device, num_classes=None, dice_weight=0.5):
+def make_loss(dataset_name, device, num_classes=None, dice_weight=0.0, aux_weight=0.4):
     """
     Build the combined CE + Dice loss for a given dataset.
+
+    When the model returns a tuple (main_logits, aux_logits) during training
+    (e.g. DeepLabv3+), the returned callable automatically computes:
+        total = combined_loss(main) + aux_weight * combined_loss(aux)
 
     Args:
         dataset_name: key into _CE_WEIGHTS (e.g. "ACDC")
         device:       torch device for weight tensor
         num_classes:  override if dataset_name not in _CE_WEIGHTS
         dice_weight:  weight applied to the Dice term (default 0.5)
+        aux_weight:   weight applied to the auxiliary head loss (default 0.4)
 
     Returns:
         callable  loss_fn(pred, target) → scalar
+            pred may be a raw logit tensor (B, C, H, W)
+            or a tuple (main_logits, aux_logits) from models with aux output
     """
     raw_weights = _CE_WEIGHTS.get(dataset_name)
     if raw_weights is None:
@@ -85,9 +92,16 @@ def make_loss(dataset_name, device, num_classes=None, dice_weight=0.5):
         ce_fn = nn.CrossEntropyLoss(weight=ce_weights)
         n_cls = num_classes or len(raw_weights)
 
-    def combined_loss(pred, target):
+    def _single(pred, target):
+        """CE + Dice for one set of logits."""
         ce   = ce_fn(pred, target)
         dice = soft_dice_loss(pred, target, num_classes=n_cls, ignore_bg=True)
         return ce + dice_weight * dice
+
+    def combined_loss(pred, target):
+        if isinstance(pred, tuple):
+            main_pred, aux_pred = pred
+            return _single(main_pred, target) + aux_weight * _single(aux_pred, target)
+        return _single(pred, target)
 
     return combined_loss

@@ -34,7 +34,31 @@ from utils import (
 
 
 def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name, split="test"):
-    """Run full evaluation with per-class metrics and export results."""
+    """
+    Run full evaluation with per-class metrics and export results.
+
+    HD95 PENALTY CONVENTION (please read before comparing HD95 across papers):
+        When a class is present in the ground truth but completely absent
+        from the prediction (or vice versa), there is no well-defined
+        Hausdorff distance — the surface-distance computation has no
+        boundary pixels to compare against. Rather than skip the sample
+        (which would silently make a totally-missed structure invisible
+        to the metric and reward you for confidently predicting "absent"),
+        this implementation penalizes that sample with the maximum
+        possible distance in the image: sqrt(H^2 + W^2), the image
+        diagonal in pixels.
+
+        This is a deliberate and common convention (used e.g. in nnU-Net's
+        evaluation utilities) but it is NOT universal — some papers instead
+        exclude such samples entirely, or report a separate "detection rate"
+        metric alongside HD95. If you are comparing HD95 numbers from this
+        repo against numbers reported in another paper, check which
+        convention that paper uses; the values are only comparable if the
+        convention matches. This also means a single missed structure on
+        a tiny dataset (e.g. CAMUS test set) can swing mean HD95 substantially,
+        since the penalty is large relative to typical in-distribution
+        surface distances of a few pixels.
+    """
     # ── Dataset-aware config (replaces all hardcoded class lists) ──
     dataset_cfg    = DATASET_CONFIGS[dataset_name.upper()]
     num_classes    = dataset_cfg["num_classes"]
@@ -126,66 +150,88 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name, s
             if idx in FIXED_VIZ_IDX:
                 all_preds.append(pred_mask)
 
-    # Compute final mean metrics across all items for each class
+    # Compute final mean + std metrics across all items for each class
     final_metrics          = {}
     mean_dice_accumulator  = []
     mean_iou_accumulator   = []
     mean_hd95_accumulator  = []
 
     for cls in range(1, num_classes):
-        c_dice = np.mean(class_dice_lists[cls]) if class_dice_lists[cls] else 0.0
-        c_iou  = np.mean(class_iou_lists[cls])  if class_iou_lists[cls]  else 0.0
-        c_hd95 = np.mean(class_hd95_lists[cls]) if class_hd95_lists[cls] else 0.0
+        c_dice_vals = class_dice_lists[cls]
+        c_iou_vals  = class_iou_lists[cls]
+        c_hd95_vals = class_hd95_lists[cls]
 
-        final_metrics[f"dice_cls_{cls}"] = c_dice
-        final_metrics[f"iou_cls_{cls}"]  = c_iou
-        final_metrics[f"hd95_cls_{cls}"] = c_hd95
+        c_dice = np.mean(c_dice_vals) if c_dice_vals else 0.0
+        c_iou  = np.mean(c_iou_vals)  if c_iou_vals  else 0.0
+        c_hd95 = np.mean(c_hd95_vals) if c_hd95_vals else 0.0
+
+        c_dice_std = np.std(c_dice_vals) if c_dice_vals else 0.0
+        c_iou_std  = np.std(c_iou_vals)  if c_iou_vals  else 0.0
+        c_hd95_std = np.std(c_hd95_vals) if c_hd95_vals else 0.0
+
+        final_metrics[f"dice_cls_{cls}"]     = c_dice
+        final_metrics[f"dice_cls_{cls}_std"] = c_dice_std
+        final_metrics[f"iou_cls_{cls}"]      = c_iou
+        final_metrics[f"iou_cls_{cls}_std"]  = c_iou_std
+        final_metrics[f"hd95_cls_{cls}"]     = c_hd95
+        final_metrics[f"hd95_cls_{cls}_std"] = c_hd95_std
 
         # Only accumulate into the foreground mean if class belongs to active dataset classes
         if cls in ACTIVE_CLASSES:
-            mean_dice_accumulator.append(c_dice)
-            mean_iou_accumulator.append(c_iou)
-            mean_hd95_accumulator.append(c_hd95)
+            mean_dice_accumulator.extend(c_dice_vals)
+            mean_iou_accumulator.extend(c_iou_vals)
+            mean_hd95_accumulator.extend(c_hd95_vals)
 
-    # Calculate overall foreground averages using active valid subsets
+    # Calculate overall foreground mean +/- std using pooled per-sample values
+    # across all active classes (so std reflects sample-to-sample variability,
+    # not just inter-class variability of the means).
     dice_score = np.mean(mean_dice_accumulator) if mean_dice_accumulator else 0.0
+    dice_std   = np.std(mean_dice_accumulator)  if mean_dice_accumulator else 0.0
     iou_score  = np.mean(mean_iou_accumulator)  if mean_iou_accumulator  else 0.0
+    iou_std    = np.std(mean_iou_accumulator)   if mean_iou_accumulator  else 0.0
     hd95_score = np.mean(mean_hd95_accumulator) if mean_hd95_accumulator else 0.0
-    pixel_acc  = np.mean(all_pixel_acc)
+    hd95_std   = np.std(mean_hd95_accumulator)  if mean_hd95_accumulator else 0.0
+    pixel_acc     = np.mean(all_pixel_acc)
+    pixel_acc_std = np.std(all_pixel_acc)
 
     # ---- Print evaluation summary to console ----
     print(f"\n==================================================")
     print(f"FINAL EVALUATION RESULTS ({dataset_name})")
     print(f"==================================================")
-    print(f"Overall Metrics (Valid Foreground Classes Only):")
-    print(f"  Global Pixel Acc : {pixel_acc:.2f}%")
-    print(f"  Mean Dice (fg)   : {dice_score:.4f}")
-    print(f"  Mean IoU (fg)    : {iou_score:.4f}")
-    print(f"  Mean HD95 (fg)   : {hd95_score:.2f} px")
+    print(f"Overall Metrics (Valid Foreground Classes Only, mean ± std over samples):")
+    print(f"  Global Pixel Acc : {pixel_acc:.2f}% ± {pixel_acc_std:.2f}%")
+    print(f"  Mean Dice (fg)   : {dice_score:.4f} ± {dice_std:.4f}")
+    print(f"  Mean IoU (fg)    : {iou_score:.4f} ± {iou_std:.4f}")
+    print(f"  Mean HD95 (fg)   : {hd95_score:.2f} ± {hd95_std:.2f} px")
     print(f"  Model Weight Size: {model_size_mb:.2f} MB")
     print(f"  Inference Latency: {latency_ms:.2f} ms/sample")
     print(f"--------------------------------------------------")
-    print(f"Per-Class Breakdown:")
+    print(f"Per-Class Breakdown (mean ± std):")
     for cls in range(1, num_classes):
         status_label = "" if cls in ACTIVE_CLASSES else " [OMITTED FROM MEAN]"
         print(f"  Class {cls} - {CLASS_NAMES.get(cls, f'Class {cls}')}{status_label}:")
-        print(f"    Dice: {final_metrics[f'dice_cls_{cls}']:.4f}")
-        print(f"    IoU : {final_metrics[f'iou_cls_{cls}']:.4f}")
-        print(f"    HD95: {final_metrics[f'hd95_cls_{cls}']:.2f} px")
+        print(f"    Dice: {final_metrics[f'dice_cls_{cls}']:.4f} ± {final_metrics[f'dice_cls_{cls}_std']:.4f}")
+        print(f"    IoU : {final_metrics[f'iou_cls_{cls}']:.4f} ± {final_metrics[f'iou_cls_{cls}_std']:.4f}")
+        print(f"    HD95: {final_metrics[f'hd95_cls_{cls}']:.2f} ± {final_metrics[f'hd95_cls_{cls}_std']:.2f} px")
     print(f"==================================================")
 
     # ---- Export extended metrics CSV ----
     tag         = dataset_name.lower()
     export_data = {
-        "model":          model_name,
-        "dataset":        tag,
-        "split":          split,          # "val" during training, "test" for final evaluation
-        "pixel_accuracy": pixel_acc,
-        "mean_dice":      dice_score,
-        "mean_iou":       iou_score,
-        "mean_hd95":      hd95_score,
-        "model_size_mb":  model_size_mb,
-        "latency_ms":     latency_ms,
+        "model":             model_name,
+        "dataset":           tag,
+        "split":             split,          # "val" during training, "test" for final evaluation
+        "pixel_accuracy":    pixel_acc,
+        "pixel_accuracy_std": pixel_acc_std,
+        "mean_dice":         dice_score,
+        "mean_dice_std":     dice_std,
+        "mean_iou":          iou_score,
+        "mean_iou_std":      iou_std,
+        "mean_hd95":         hd95_score,
+        "mean_hd95_std":     hd95_std,
+        "model_size_mb":     model_size_mb,
+        "latency_ms":        latency_ms,
+        "n_samples":         len(val_dataset),
     }
     # Dynamically flatten class-specific metrics into the dataframe row
     for cls in range(1, num_classes):
@@ -208,13 +254,18 @@ def evaluate(model, device, val_dataset, output_dir, dataset_name, model_name, s
     print(f"Artifacts successfully exported to {output_dir}")
 
     return {
-        "dice":          dice_score,
-        "iou":           iou_score,
-        "hd95":          hd95_score,
-        "pixel_acc":     pixel_acc,
-        "model_size_mb": model_size_mb,
-        "latency_ms":    latency_ms,
-        "per_class":     final_metrics,
+        "dice":              dice_score,
+        "dice_std":          dice_std,
+        "iou":               iou_score,
+        "iou_std":           iou_std,
+        "hd95":              hd95_score,
+        "hd95_std":          hd95_std,
+        "pixel_acc":         pixel_acc,
+        "pixel_acc_std":     pixel_acc_std,
+        "model_size_mb":     model_size_mb,
+        "latency_ms":        latency_ms,
+        "per_class":         final_metrics,
+        "n_samples":         len(val_dataset),
     }
 
 
@@ -240,7 +291,7 @@ def main():
         **ds_kwargs,
     )
 
-    checkpoint_path = args.checkpoint or os.path.join(args.output_dir, f"{args.model}.pth")
+    checkpoint_path = args.checkpoint or os.path.join(args.output_dir, f"{args.model}_{args.dataset.lower()}.pth")
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(
             f"Checkpoint not found: {checkpoint_path}\n"

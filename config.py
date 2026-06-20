@@ -15,7 +15,7 @@ import torch
 
 # ────────────────────────────── Determinism ──────────────────────────────
 
-SEED = 42
+SEED = 123
 
 
 def seed_everything(seed: int = SEED):
@@ -47,8 +47,9 @@ FIXED_VIZ_IDX = [5, 16, 25, 35, 45, 55, 65, 75, 86, 95,
 
 # Shared training defaults
 WEIGHT_DECAY = 1e-4
-VAL_SPLIT    = 0.10   # 10% of patients for validation during training
-TEST_SPLIT   = 0.20   # 20% of patients held out for final test evaluation
+VAL_SPLIT    = 0.05   # 10% of patients for validation during training
+TEST_SPLIT   = 0.15   # 10% of patients held out for final test evaluation
+# → train_ratio = 1 - VAL_SPLIT - TEST_SPLIT = 0.80, giving an 8-1-1 split
 NUM_WORKERS  = 2
 PIN_MEMORY   = True
 
@@ -93,12 +94,12 @@ MODEL_CONFIGS = {
             "drop_path_rate": 0.1,
         },
         "hyperparams": {
-            "lr_a": 6e-4,
-            "lr_b": 6e-6,
-            "batch_size_a": 32,
-            "batch_size_b": 16,
-            "epochs_a": 15,
-            "epochs_b": 10,
+            "lr_a": 8e-4,
+            "lr_b": 2e-5,
+            "batch_size_a": 12,
+            "batch_size_b": 6,
+            "epochs_a": 20,
+            "epochs_b": 15,
         },
         "model_kwargs": {
             "out_channels": NUM_CLASSES,
@@ -109,13 +110,19 @@ MODEL_CONFIGS = {
     "deeplabv3_resnet50": {
         "backbone_attr": "backbone",
         "hyperparams": {
-            "lr_a": 2e-4,
-            "lr_b": 2e-5,
-            "batch_size": 16,
-            "epochs": 50,
+            # Single-stage training, no freeze/unfreeze phases.
+            # Per-component differential LR for the whole run:
+            #   backbone (lower LR)  @ lr_b
+            #   ASPP + decoder       @ lr_a
+            # Polynomial LR decay (power=0.9) applied across all NUM_EPOCHS, per batch.
+            "lr_a": 5e-4,       # LEARNING_RATE_A — ASPP + decoder
+            "lr_b": 5e-5,       # LEARNING_RATE_B — backbone
+            "weight_decay": 1e-4,
+            "batch_size": 12,
+            "epochs": 45,
         },
         "model_kwargs": {
-            "output_stride": 16,
+            "output_stride": 32,
             "in_channels": 1,
             "out_channels": NUM_CLASSES,
         },
@@ -123,8 +130,8 @@ MODEL_CONFIGS = {
     "unet_vanilla": {
         "backbone_attr": None,          
         "hyperparams": {
-            "lr_a":      1e-3,          # Stage 1: full-model warm-up
-            "lr_b":      1e-4,          # Stage 2: reduced-LR fine-tuning
+            "lr_a":      1e-4,          # Stage 1: full-model warm-up
+            "lr_b":      1e-5,          # Stage 2: reduced-LR fine-tuning
             "batch_size": 16,
             "epochs_a":  25,
             "epochs_b":  25,
@@ -138,13 +145,19 @@ MODEL_CONFIGS = {
     "unet_resnet34": {
         "backbone_attr": "encoder",
         "hyperparams": {
-            "lr_a": 1e-4,
-            "lr_b": 1e-5,
-            "lr_c": 2e-6,
-            "batch_size": 16,
-            "epochs_a": 15,
-            "epochs_b": 25,
-            "epochs_c": 10,
+            # Matches original notebook exactly (medseg-unet-acdc-camus-ii.ipynb,
+            # TRAIN_PHASES list):
+            #   Phase 1 (warmup):   encoder frozen,   10 epochs @ 1e-3
+            #   Phase 2 (finetune): encoder unfrozen, 20 epochs @ 1e-4
+            # Each phase gets its OWN fresh Adam optimizer + CosineAnnealingLR
+            # (T_max = that phase's epoch count) — not a single optimizer
+            # carried across phases with a manually-lowered LR.
+            "lr_a": 8e-4,        # Phase 1 (warmup) LR
+            "lr_b": 8e-6,        # Phase 2 (finetune) LR
+            "weight_decay": 1e-4,   # Notebook uses 1e-5 here, NOT the global default
+            "batch_size": 16,        # Notebook's BATCH_SIZE
+            "epochs_a": 10,         # Phase 1 epoch count
+            "epochs_b": 20,         # Phase 2 epoch count
         },
         "model_kwargs": {
             "in_channels": 1,
@@ -175,8 +188,8 @@ MODEL_CONFIGS = {
         "hyperparams": {
             "lr_a": 1e-3,
             "lr_b": 5e-7,
-            "batch_size_a": 24,
-            "batch_size_b": 12,
+            "batch_size_a": 16,
+            "batch_size_b": 8,
             "epochs_a": 15,
             "epochs_b": 35,
             "stage_a_patience": 5,
@@ -194,11 +207,11 @@ MODEL_CONFIGS = {
         "backbone_attr": "encoder",
         "hyperparams": {
             "lr_a": 1e-3,               # decoder warm-up (encoder frozen)
-            "lr_b": 1e-4,               # encoder fine-tune (very conservative for large model)
-            "batch_size_a": 32,         # Base is ~3× larger than Tiny — reduce batch size
-            "batch_size_b": 16,
-            "epochs_a": 25,
-            "epochs_b": 40,
+            "lr_b": 4e-5,               # encoder fine-tune (very conservative for large model)
+            "batch_size_a": 16,         # Base is ~3× larger than Tiny — reduce batch size
+            "batch_size_b": 8,
+            "epochs_a": 20,
+            "epochs_b": 35,
             "stage_a_patience": 5,
         },
         "model_kwargs": {
@@ -300,9 +313,9 @@ def parse_args():
                    help="Override learning rate")
     p.add_argument("--weight_decay", type=float, default=WEIGHT_DECAY)
     p.add_argument("--val_split",    type=float, default=VAL_SPLIT,
-                   help="Fraction of patients for validation (default: 0.10)")
+                   help="Fraction of patients for validation (default: 0.10, giving an 8-1-1 split)")
     p.add_argument("--test_split",   type=float, default=TEST_SPLIT,
-                   help="Fraction of patients held out for final test evaluation (default: 0.20)")
+                   help="Fraction of patients held out for final test evaluation (default: 0.10, giving an 8-1-1 split)")
     p.add_argument("--num_workers",  type=int,   default=NUM_WORKERS)
     p.add_argument("--seed",         type=int,   default=SEED)
 
